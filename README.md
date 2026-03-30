@@ -123,6 +123,7 @@ Dense signals throughout the trajectory:
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/` | `{"status": "running", ...}` — Space health check |
 | GET | `/health` | `{"status": "ok", "version": "0.1.0"}` |
 | POST | `/reset?task_id=...&scenario_index=...` | Start new episode |
 | POST | `/step` | Submit action (JSON body) |

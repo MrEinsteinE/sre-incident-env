@@ -2,7 +2,7 @@
 server/app.py — FastAPI server for Cloud Incident Response OpenEnv.
 
 Endpoints:
-  GET  /          HTML landing page (triggers HF Space "Running" status)
+  GET  /          JSON health/status (triggers HF Space "Running" status)
   GET  /health    Health check
   POST /reset     Start new episode
   POST /step      Submit action
@@ -21,15 +21,34 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 
 from server.models import Action
 from server.environment import IncidentEnvironment
 from tasks import list_tasks, ALL_TASKS
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ── Global env instance — initialised in lifespan, not at import time ────────
+_env: IncidentEnvironment | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise heavy objects after the server is already accepting requests."""
+    global _env
+    _env = IncidentEnvironment()
+    yield
+    # cleanup (nothing needed)
+
+
+def _get_env() -> IncidentEnvironment:
+    if _env is None:
+        raise HTTPException(status_code=503, detail="Environment initialising — retry in a moment")
+    return _env
+
 
 app = FastAPI(
     title="Cloud Incident Response — OpenEnv",
@@ -38,6 +57,7 @@ app = FastAPI(
         "OpenEnv environment for training AI agents on cloud SRE incident response. "
         "Covers cascading failures, OOM kills, CDN storms, and network partitions."
     ),
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -47,64 +67,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-env = IncidentEnvironment()
 
+# ── Root — plain JSON so HF health checker flips badge to Running ─────────────
 
-# ── Landing page (required for HF Space Running status) ─────────────────────
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def root():
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Cloud Incident Response — OpenEnv</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; max-width: 680px;
-           margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
-    h1   { font-size: 1.6rem; margin-bottom: 4px; }
-    .tag { display:inline-block; background:#e8f4fd; color:#0066cc;
-           padding:2px 8px; border-radius:4px; font-size:.8rem;
-           margin-right:4px; margin-bottom:8px; }
-    .status { color: #16a34a; font-weight: 600; }
-    table  { border-collapse: collapse; width: 100%; margin: 16px 0; }
-    th, td { text-align: left; padding: 8px 12px;
-             border-bottom: 1px solid #e5e7eb; font-size: .9rem; }
-    th     { background: #f9fafb; font-weight: 600; }
-    a      { color: #0066cc; }
-    code   { background: #f3f4f6; padding: 1px 5px; border-radius: 3px;
-             font-size: .85rem; }
-  </style>
-</head>
-<body>
-  <h1>&#x1F6A8; Cloud Incident Response &mdash; OpenEnv</h1>
-  <div>
-    <span class="tag">openenv</span><span class="tag">sre</span>
-    <span class="tag">cloud</span><span class="tag">real-world</span>
-    <span class="tag">agentic</span>
-  </div>
-  <p>Status: <span class="status">&#x2713; Running</span></p>
-  <p>
-    OpenEnv environment for training and evaluating AI agents on
-    cloud SRE incident response. Covers cross-service cascading failures,
-    OOM kills, CDN cache storms, and BGP network partitions.
-  </p>
-  <table>
-    <tr><th>Task</th><th>Difficulty</th><th>Max Steps</th></tr>
-    <tr><td><code>alert_classification</code></td><td>Easy</td><td>3</td></tr>
-    <tr><td><code>root_cause_analysis</code></td><td>Medium</td><td>10</td></tr>
-    <tr><td><code>remediation_planning</code></td><td>Hard</td><td>15</td></tr>
-  </table>
-  <p>
-    <a href="/docs">&#x1F4D6; API Docs (Swagger)</a> &nbsp;&middot;&nbsp;
-    <a href="/tasks">&#x1F4CB; Tasks</a> &nbsp;&middot;&nbsp;
-    <a href="/health">&#x2764; Health</a>
-  </p>
-</body>
-</html>"""
+    """Plain JSON root — required for HF Space to show Running status."""
+    return {
+        "status": "running",
+        "name": "cloud-incident-response",
+        "version": "0.1.0",
+        "description": "OpenEnv environment for cloud SRE incident response",
+        "tasks": ["alert_classification", "root_cause_analysis", "remediation_planning"],
+        "docs": "/docs",
+        "health": "/health",
+    }
 
 
-# ── Core endpoints ───────────────────────────────────────────────────────────
+# ── Core endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
@@ -117,6 +97,7 @@ def reset(
     scenario_index: int = Query(default=0),
 ):
     """Start a new episode. Returns the initial observation."""
+    env = _get_env()
     try:
         obs = env.reset(task_id=task_id, scenario_index=scenario_index)
         return obs.model_dump()
@@ -129,6 +110,7 @@ def reset(
 @app.post("/step")
 def step(action: Action):
     """Submit one action. Returns observation, reward, done, info."""
+    env = _get_env()
     try:
         obs, reward, done, info = env.step(action)
         return {
@@ -146,6 +128,7 @@ def step(action: Action):
 @app.get("/state")
 def state():
     """Return the full current episode state."""
+    env = _get_env()
     try:
         return env.state().model_dump()
     except RuntimeError as e:
@@ -206,6 +189,7 @@ def tasks():
 @app.get("/grader")
 def grader():
     """Score the current episode. Returns total in [0.0, 1.0]."""
+    env = _get_env()
     try:
         s = env.state()
         from graders import grade
