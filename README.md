@@ -44,14 +44,14 @@ Agents trained here learn the same skills a human SRE uses: service dependency t
 
 ### Scenarios
 
-| ID | Incident Type | Failure Pattern |
-|---|---|---|
-| AC-001 | DB connection pool exhaustion | postgres-db → auth-service → api-gateway cascade |
-| AC-002 | CDN cache invalidation storm | Misconfigured purge job → 40× origin traffic |
-| RCA-001 | Postgres OOM kill | Runaway analytics query → kernel OOM → all dependents down |
-| RCA-002 | BGP network partition | Route withdrawal → AZ isolation → 61% checkout failures |
-| RP-001 | Full OOM remediation | Disable job → restart DB → restore services → document |
-| RP-002 | Full BGP remediation | Restore routes → rollback config → verify recovery → document |
+| ID | Incident Type | Root Cause | Failure Pattern |
+|---|---|---|---|
+| AC-001 | DB connection pool exhaustion | postgres-db / auth-service deploy | api-gateway → auth-service → postgres-db cascade |
+| AC-002 | CDN cache invalidation storm | cdn-edge purge cronjob misconfigured | 40× origin traffic spike |
+| RCA-001 | Postgres OOM kill | analytics-service unbounded query | Kernel OOM → DB crash loop → all dependents down |
+| RCA-002 | BGP network partition | network-infra config change | Route withdrawal → AZ isolation → 61% checkout failures |
+| RP-001 | Full OOM remediation | analytics-service | Disable job → restart DB → restore services → document |
+| RP-002 | Full BGP remediation | network-infra | Restore routes → rollback config → verify recovery → document |
 
 ## Action Space
 
@@ -67,7 +67,7 @@ Agents trained here learn the same skills a human SRE uses: service dependency t
 **Remediation actions** (fix the incident):
 ```json
 {"action_type": "restart_service",      "parameters": {"service": "postgres-db"}}
-{"action_type": "rollback_deploy",      "parameters": {"service": "network-infra"}}
+{"action_type": "rollback_deploy",      "parameters": {"service": "network-infra", "target_version": "previous"}}
 {"action_type": "scale_service",        "parameters": {"service": "image-service", "replicas": 10}}
 {"action_type": "disable_feature_flag", "parameters": {"flag": "full_history_export"}}
 {"action_type": "execute_runbook_step", "parameters": {"runbook_action": "restore_bgp_routes"}}
@@ -76,7 +76,7 @@ Agents trained here learn the same skills a human SRE uses: service dependency t
 **Submission actions** (end the episode):
 ```json
 {"action_type": "submit_severity",   "parameters": {"severity": "P1", "service": "postgres-db"}}
-{"action_type": "submit_root_cause", "parameters": {"service": "analytics-service", "failure_mode": "unbounded query OOM"}}
+{"action_type": "submit_root_cause", "parameters": {"service": "analytics-service", "failure_mode": "unbounded query OOM killing postgres-db"}}
 {"action_type": "submit_resolution", "parameters": {"summary": "Disabled analytics job, restarted postgres-db..."}}
 ```
 
@@ -87,44 +87,45 @@ Agents trained here learn the same skills a human SRE uses: service dependency t
 | `episode_id` | string | Unique episode UUID |
 | `task_id` | string | Active task |
 | `scenario_id` | string | Scenario (e.g. `AC-001`) |
-| `step_count` / `max_steps` | int | Current progress and budget |
+| `step_count` / `max_steps` | int | Current step and budget |
 | `incident_summary` | string | Plain-text incident description |
 | `alert` | dict | Alert payload with severity, symptoms, affected services |
 | `available_actions` | list[str] | Valid action types for this task |
 | `queried_data` | dict | All tool responses gathered so far |
+| `known_services` | list[str] | Exact service names to use in actions |
 | `cumulative_reward` | float | Running reward total |
 | `done` | bool | Episode terminal flag |
-| `feedback` | string | Per-step feedback |
+| `feedback` | string | Per-step feedback string |
 
 ## Reward Function
 
-Dense signals throughout the trajectory:
+Dense reward shaping throughout the trajectory:
 
 | Event | Reward |
 |---|---|
 | Query known service (first time) | +0.05 |
 | Query known service (repeat) | +0.01 |
-| Query unknown service | -0.05 |
+| Query unknown service | −0.05 |
 | Correct remediation action | +0.10 |
-| Wrong remediation action | -0.10 |
-| Step past halfway (non-submit) | -0.02 |
-| Timeout without submission | -0.10 |
+| Wrong remediation action | −0.10 |
+| Step past halfway (non-submit) | −0.02 |
+| Timeout without submission | −0.10 |
 | Grader score (terminal step) | 0.0–1.0 |
 
 **Grader scoring** (deterministic, via `GET /grader`):
 
-| Task | Scoring |
+| Task | Scoring Logic |
 |---|---|
-| `alert_classification` | 1.0 exact · 0.5 adjacent · 0.25 two-off · 0.0 wrong |
-| `root_cause_analysis` | 0.6 base + up to 0.4 efficiency bonus |
+| `alert_classification` | 1.0 exact · 0.5 adjacent · 0.25 two-off · 0.0 wrong/none |
+| `root_cause_analysis` | 0.6 base (svc+mode) + up to 0.4 efficiency bonus |
 | `remediation_planning` | 0.6 base + 0.3 efficiency − 0.15 wrong penalty + 0.1 summary |
 
 ## API Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/` | `{"status": "running", ...}` — Space health check |
-| GET | `/health` | `{"status": "ok", "version": "0.1.0"}` |
+| GET | `/` | `{"status":"running",...}` — HF Space health |
+| GET | `/health` | `{"status":"ok","version":"0.1.0"}` |
 | POST | `/reset?task_id=...&scenario_index=...` | Start new episode |
 | POST | `/step` | Submit action (JSON body) |
 | GET | `/state` | Full current episode state |
@@ -132,37 +133,73 @@ Dense signals throughout the trajectory:
 | GET | `/grader` | Score current episode (0.0–1.0) |
 | POST | `/baseline` | Run inference.py, return scores |
 
-## Setup
+## Setup & Usage
 
+### Local development
 ```bash
-# Local
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 7860
+```
 
-# Docker
+### Docker
+```bash
 docker build -t cloud-incident-env .
 docker run -p 7860:7860 \
   -e API_BASE_URL="https://api-inference.huggingface.co/v1" \
   -e MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct" \
   -e HF_TOKEN="hf_your_token" \
   cloud-incident-env
+```
 
-# Run inference script
+### Run inference script
+```bash
 export API_BASE_URL="https://api-inference.huggingface.co/v1"
 export MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 export HF_TOKEN="hf_your_token"
 python inference.py
 ```
 
+### Quick API test
+```bash
+# Start new episode
+curl -X POST "http://localhost:7860/reset?task_id=alert_classification&scenario_index=0"
+
+# Submit an action
+curl -X POST http://localhost:7860/step \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"query_logs","parameters":{"service":"api-gateway"}}'
+
+# Check score
+curl http://localhost:7860/grader
+```
+
 ## Baseline Scores
 
 Using `meta-llama/Llama-3.1-8B-Instruct` via HF Inference API:
 
-| Task | Score |
-|---|---|
-| `alert_classification` | ~0.75 |
-| `root_cause_analysis` | ~0.35 |
-| `remediation_planning` | ~0.20 |
-| **overall** | **~0.43** |
+| Task | Scenario 0 | Scenario 1 | Average |
+|---|---|---|---|
+| `alert_classification` | ~1.00 | ~0.50 | ~0.75 |
+| `root_cause_analysis` | ~0.45 | ~0.35 | ~0.40 |
+| `remediation_planning` | ~0.25 | ~0.20 | ~0.23 |
+| **overall** | | | **~0.46** |
 
 *Run `python inference.py` to reproduce.*
+
+## Project Structure
+
+```
+.
+├── Dockerfile
+├── README.md
+├── requirements.txt
+├── openenv.yaml
+├── tasks.py          # Scenario definitions (6 scenarios across 3 tasks)
+├── graders.py        # Deterministic graders for all tasks
+├── inference.py      # Baseline agent + smart fallback logic
+└── server/
+    ├── __init__.py
+    ├── app.py        # FastAPI endpoints
+    ├── environment.py # Core OpenEnv step/reset/state logic
+    └── models.py     # Typed Pydantic models (Action, Observation, Reward)
+```

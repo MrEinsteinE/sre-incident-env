@@ -19,7 +19,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tasks import get_task, get_scenario
-from graders import grade
+from graders import grade, _svc_match
 from server.models import Action, ActionParameters, Observation, Reward, EpisodeState
 
 # ── Action type classification ────────────────────────────────────────────────
@@ -40,33 +40,32 @@ _SUBMIT = frozenset({
 
 # ── Reward constants ──────────────────────────────────────────────────────────
 
-R_QUERY_FIRST   = +0.05   # First time querying a known service
-R_QUERY_REPEAT  = +0.01   # Re-querying same service/tool
-R_QUERY_UNKNOWN = -0.05   # Querying an unknown service
-R_REM_GOOD      = +0.10   # Correct remediation action
-R_REM_WRONG     = -0.10   # Wrong remediation action
-R_PAST_HALF     = -0.02   # Step efficiency penalty past halfway
-R_TIMEOUT       = -0.10   # No submission before max_steps
-R_BAD_ACTION    = -0.03   # Unrecognised action_type
+R_QUERY_FIRST   = +0.05
+R_QUERY_REPEAT  = +0.01
+R_QUERY_UNKNOWN = -0.05
+R_REM_GOOD      = +0.10
+R_REM_WRONG     = -0.10
+R_PAST_HALF     = -0.02
+R_TIMEOUT       = -0.10
+R_BAD_ACTION    = -0.03
 
 
 class IncidentEnvironment:
     """
     OpenEnv environment for Cloud Incident Response.
-    One instance handles one episode at a time. Thread-safe.
+    One instance handles one episode at a time (thread-safe).
     """
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self._s: dict = {}
+        self._lock     = threading.Lock()
+        self._s:        dict = {}
         self._scenario: dict = {}
         self._task_def: dict = {}
-        self._ready = False
+        self._ready          = False
 
     # ── Public OpenEnv API ───────────────────────────────────────────────────
 
     def reset(self, task_id: str, scenario_index: int = 0) -> Observation:
-        """Start a fresh episode. Returns the initial Observation."""
         with self._lock:
             task_def = get_task(task_id)
             scenario = get_scenario(task_id, scenario_index)
@@ -92,7 +91,6 @@ class IncidentEnvironment:
             return self._build_obs()
 
     def step(self, action: Action) -> tuple[Observation, Reward, bool, dict]:
-        """Process one agent action. Returns (Observation, Reward, done, info)."""
         with self._lock:
             if not self._ready:
                 raise RuntimeError("Call reset() before step().")
@@ -109,8 +107,8 @@ class IncidentEnvironment:
 
             s["step_count"] += 1
             step_num = s["step_count"]
-            at = action.action_type
-            params = action.parameters
+            at       = action.action_type
+            params   = action.parameters
 
             s["action_history"].append({
                 "action_type": at,
@@ -118,10 +116,10 @@ class IncidentEnvironment:
                 "step":        step_num,
             })
 
-            r = 0.0
+            r  = 0.0
             fb: list[str] = []
 
-            # Efficiency penalty past halfway
+            # Efficiency penalty after halfway point
             if step_num > s["max_steps"] // 2:
                 r += R_PAST_HALF
                 fb.append("efficiency penalty")
@@ -138,13 +136,13 @@ class IncidentEnvironment:
                 r += R_BAD_ACTION
                 fb.append(f"unknown action_type '{at}'")
 
-            # Timeout
+            # Timeout if max steps reached without submission
             if step_num >= s["max_steps"] and not s["done"]:
                 r += R_TIMEOUT
                 fb.append("timeout — no submission made")
                 s["done"] = True
 
-            # Run grader on terminal step
+            # Apply grader score on terminal step
             if s["done"]:
                 result = grade(s["task_id"], s, self._scenario)
                 s["cumulative_reward"] = round(
@@ -168,7 +166,6 @@ class IncidentEnvironment:
             )
 
     def state(self) -> EpisodeState:
-        """Return the full current episode state."""
         with self._lock:
             if not self._ready:
                 raise RuntimeError("No active episode — call reset() first.")
@@ -193,11 +190,11 @@ class IncidentEnvironment:
     def _handle_diagnostic(
         self, at: str, params: ActionParameters, r: float, fb: list[str]
     ) -> tuple[float, list[str]]:
-        s = self._s
+        s       = self._s
         service = (params.service or "").lower().strip()
-        known = {sv.lower() for sv in self._scenario.get("known_services", set())}
+        known   = {sv.lower() for sv in self._scenario.get("known_services", set())}
         tool_data = self._scenario.get("tool_responses", {}).get(at, {})
-        key = (at, service)
+        key     = (at, service)
 
         if service and service in known:
             if key not in s["queried_keys"]:
@@ -207,7 +204,7 @@ class IncidentEnvironment:
             else:
                 r += R_QUERY_REPEAT
                 fb.append(f"re-queried {service} (+{R_QUERY_REPEAT})")
-            result = tool_data.get(service, f"No data for '{service}'.")
+            result = tool_data.get(service, f"No data available for '{service}'.")
             s["queried_data"].setdefault(at, {})[service] = result
 
         elif service:
@@ -221,35 +218,48 @@ class IncidentEnvironment:
     def _handle_remediation(
         self, at: str, params: ActionParameters, r: float, fb: list[str]
     ) -> tuple[float, list[str]]:
-        s = self._s
+        s       = self._s
         service = (params.service or "").lower().strip()
-        flag = (params.flag or "").lower().strip()
+        flag    = (params.flag or "").lower().strip()
         runbook = (params.runbook_action or "").lower().strip()
-        target = (params.target or "").lower().strip()
+        target  = (params.target or "").lower().strip()
 
-        keys = {at}
+        # Build candidate keys for wrong-action matching
+        keys: set[str] = {at}
         if service: keys.add(f"{at}:{service}")
         if flag:    keys.add(f"{at}:{flag}")
         if runbook: keys.add(f"execute_runbook_step:{runbook}")
         if target:  keys.add(f"execute_runbook_step:{target}")
 
-        wrong_map = self._scenario.get("wrong_actions", {})
-        rem_data  = self._scenario.get("remediation_data", {})
+        wrong_map  = self._scenario.get("wrong_actions", {})
+        rem_data   = self._scenario.get("remediation_data", {})
 
-        if any(k in wrong_map for k in keys):
+        # Check for wrong actions — also use fuzzy service matching for `at:svc` keys
+        is_wrong = any(k in wrong_map for k in keys)
+        if not is_wrong and service:
+            # Try _svc_match against wrong action keys of the form `at:svc`
+            for wk in wrong_map:
+                if ":" in wk:
+                    w_at, w_svc = wk.split(":", 1)
+                    if w_at == at and _svc_match(service, w_svc):
+                        is_wrong = True
+                        break
+
+        if is_wrong:
             r += R_REM_WRONG
             reason = next(
-                (wrong_map[k] for k in keys if k in wrong_map), "wrong action"
+                (wrong_map[k] for k in keys if k in wrong_map),
+                "wrong action for this incident"
             )
             fb.append(f"wrong action '{at}': {str(reason)[:80]}")
         else:
             r += R_REM_GOOD
             fb.append(f"executed {at}" + (f" on '{service}'" if service else ""))
             at_data = rem_data.get(at, {})
-            result = (
-                at_data.get(service) or at_data.get(flag) or
-                at_data.get(runbook) or at_data.get(target) or
-                "action executed successfully"
+            result  = (
+                at_data.get(service) or at_data.get(flag)
+                or at_data.get(runbook) or at_data.get(target)
+                or "action executed successfully"
             )
             s["queried_data"].setdefault(at, {})[
                 service or flag or runbook or target or at
@@ -274,7 +284,7 @@ class IncidentEnvironment:
             )
 
         elif at == "submit_resolution":
-            summary = params.summary or ""
+            summary   = params.summary or ""
             inv_count = sum(
                 1 for a in s["action_history"]
                 if a.get("action_type") in _DIAGNOSTIC | _REMEDIATION
@@ -293,6 +303,10 @@ class IncidentEnvironment:
         s  = self._s
         sc = self._scenario
         td = self._task_def
+
+        # Return sorted list of known service names (exact strings agents must use)
+        known = sorted(sc.get("known_services", set()))
+
         return Observation(
             episode_id=s["episode_id"],
             task_id=s["task_id"],
@@ -306,4 +320,5 @@ class IncidentEnvironment:
             cumulative_reward=s["cumulative_reward"],
             done=s["done"],
             feedback=s["feedback"],
+            known_services=known,
         )

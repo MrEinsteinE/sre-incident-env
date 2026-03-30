@@ -47,6 +47,9 @@ class Observation(BaseModel):
     cumulative_reward: float
     done: bool
     feedback: str
+    # Explicit list of all valid service names for this scenario.
+    # Agents must use these exact strings in action parameters.
+    known_services: list[str] = Field(default_factory=list)
 
 
 class Reward(BaseModel):

@@ -2,14 +2,14 @@
 server/app.py — FastAPI server for Cloud Incident Response OpenEnv.
 
 Endpoints:
-  GET  /          JSON health/status (triggers HF Space "Running" status)
-  GET  /health    Health check
+  GET  /          JSON health/status (triggers HF Space "Running" badge)
+  GET  /health    Lightweight health check
   POST /reset     Start new episode
   POST /step      Submit action
   GET  /state     Current episode state
-  GET  /tasks     All tasks with schemas
+  GET  /tasks     All tasks with action schemas
   GET  /grader    Score current episode
-  POST /baseline  Run inference.py
+  POST /baseline  Run inference.py end-to-end, return score summary
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 
+# Ensure project root is on sys.path regardless of working directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
@@ -31,7 +32,7 @@ from tasks import list_tasks, ALL_TASKS
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ── Global env instance — initialised in lifespan, not at import time ────────
+# ── Global env instance ──────────────────────────────────────────────────────
 _env: IncidentEnvironment | None = None
 
 
@@ -41,12 +42,14 @@ async def lifespan(app: FastAPI):
     global _env
     _env = IncidentEnvironment()
     yield
-    # cleanup (nothing needed)
 
 
 def _get_env() -> IncidentEnvironment:
     if _env is None:
-        raise HTTPException(status_code=503, detail="Environment initialising — retry in a moment")
+        raise HTTPException(
+            status_code=503,
+            detail="Environment initialising — retry in a moment",
+        )
     return _env
 
 
@@ -68,19 +71,18 @@ app.add_middleware(
 )
 
 
-# ── Root — plain JSON so HF health checker flips badge to Running ─────────────
+# ── Root — plain JSON so HF Space flips badge to Running ─────────────────────
 
 @app.get("/")
 def root():
-    """Plain JSON root — required for HF Space to show Running status."""
     return {
-        "status": "running",
-        "name": "cloud-incident-response",
-        "version": "0.1.0",
+        "status":      "running",
+        "name":        "cloud-incident-response",
+        "version":     "0.1.0",
         "description": "OpenEnv environment for cloud SRE incident response",
-        "tasks": ["alert_classification", "root_cause_analysis", "remediation_planning"],
-        "docs": "/docs",
-        "health": "/health",
+        "tasks":       ["alert_classification", "root_cause_analysis", "remediation_planning"],
+        "docs":        "/docs",
+        "health":      "/health",
     }
 
 
@@ -93,7 +95,7 @@ def health():
 
 @app.post("/reset")
 def reset(
-    task_id: str = Query(default="alert_classification"),
+    task_id:        str = Query(default="alert_classification"),
     scenario_index: int = Query(default=0),
 ):
     """Start a new episode. Returns the initial observation."""
@@ -145,42 +147,24 @@ def tasks():
         "total": len(ALL_TASKS),
         "action_schema": {
             "diagnostic": [
-                {"action_type": "query_logs",
-                 "parameters": {"service": "string"}},
-                {"action_type": "check_metrics",
-                 "parameters": {"service": "string"}},
-                {"action_type": "check_dependencies",
-                 "parameters": {"service": "string"}},
-                {"action_type": "check_recent_deploys",
-                 "parameters": {"service": "string"}},
-                {"action_type": "check_service_status",
-                 "parameters": {"service": "string"}},
+                {"action_type": "query_logs",           "parameters": {"service": "string"}},
+                {"action_type": "check_metrics",        "parameters": {"service": "string"}},
+                {"action_type": "check_dependencies",   "parameters": {"service": "string"}},
+                {"action_type": "check_recent_deploys", "parameters": {"service": "string"}},
+                {"action_type": "check_service_status", "parameters": {"service": "string"}},
             ],
             "remediation": [
-                {"action_type": "restart_service",
-                 "parameters": {"service": "string"}},
-                {"action_type": "rollback_deploy",
-                 "parameters": {"service": "string",
-                                "target_version": "string"}},
-                {"action_type": "scale_service",
-                 "parameters": {"service": "string", "replicas": "int"}},
-                {"action_type": "disable_feature_flag",
-                 "parameters": {"flag": "string"}},
-                {"action_type": "clear_cache",
-                 "parameters": {"service": "string"}},
-                {"action_type": "execute_runbook_step",
-                 "parameters": {"runbook_action": "string",
-                                "target": "string"}},
+                {"action_type": "restart_service",      "parameters": {"service": "string"}},
+                {"action_type": "rollback_deploy",      "parameters": {"service": "string", "target_version": "string"}},
+                {"action_type": "scale_service",        "parameters": {"service": "string", "replicas": "int"}},
+                {"action_type": "disable_feature_flag", "parameters": {"flag": "string"}},
+                {"action_type": "clear_cache",          "parameters": {"service": "string"}},
+                {"action_type": "execute_runbook_step", "parameters": {"runbook_action": "string", "target": "string"}},
             ],
             "submission": [
-                {"action_type": "submit_severity",
-                 "parameters": {"severity": "P1|P2|P3|P4",
-                                "service": "string"}},
-                {"action_type": "submit_root_cause",
-                 "parameters": {"service": "string",
-                                "failure_mode": "string"}},
-                {"action_type": "submit_resolution",
-                 "parameters": {"summary": "string"}},
+                {"action_type": "submit_severity",   "parameters": {"severity": "P1|P2|P3|P4", "service": "string"}},
+                {"action_type": "submit_root_cause", "parameters": {"service": "string", "failure_mode": "string"}},
+                {"action_type": "submit_resolution", "parameters": {"summary": "string"}},
             ],
         },
     }
@@ -215,7 +199,8 @@ def baseline():
     script = os.path.join(_ROOT, "inference.py")
     if not os.path.exists(script):
         raise HTTPException(
-            status_code=500, detail="inference.py not found in project root"
+            status_code=500,
+            detail="inference.py not found in project root",
         )
     try:
         result = subprocess.run(
@@ -233,7 +218,7 @@ def baseline():
         raise HTTPException(status_code=500, detail=result.stderr[-2000:])
 
     lines = result.stdout.strip().splitlines()
-    last = lines[-1] if lines else ""
+    last  = lines[-1] if lines else ""
     try:
         return json.loads(last)
     except Exception:
