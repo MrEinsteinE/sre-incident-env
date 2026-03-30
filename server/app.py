@@ -1,3 +1,4 @@
+# SRE Incident Response OpenEnv v0.1.0
 """
 server/app.py — FastAPI server exposing the OpenEnv HTTP interface.
 
