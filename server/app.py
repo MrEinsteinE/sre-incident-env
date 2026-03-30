@@ -156,7 +156,7 @@ def grader():
     """Run the grader on the current episode. Returns score in [0.0, 1.0]."""
     try:
         s = env.state()
-        from graders import grade
+        from scoring import grade
         result = grade(s.task_id, s.model_dump(), env._scenario)
         return {
             "total": result["total"],
@@ -175,10 +175,10 @@ def grader():
 
 @app.post("/baseline")
 def baseline():
-    """Run inference.py and return the JSON score summary."""
-    script = os.path.join(_PROJECT_ROOT, "inference.py")
+    """Run agent.py and return the JSON score summary."""
+    script = os.path.join(_PROJECT_ROOT, "agent.py")
     if not os.path.exists(script):
-        raise HTTPException(status_code=500, detail="inference.py not found in project root")
+        raise HTTPException(status_code=500, detail="agent.py not found in project root")
     try:
         result = subprocess.run(
             [sys.executable, script],
@@ -189,7 +189,7 @@ def baseline():
             env={**os.environ, "ENV_BASE_URL": "http://localhost:7860"},
         )
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="inference.py timed out (>20 min)")
+        raise HTTPException(status_code=500, detail="agent.py timed out (>20 min)")
 
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr[-2000:])

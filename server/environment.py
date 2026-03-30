@@ -19,7 +19,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tasks import ALL_TASKS, get_task, get_scenario
-from graders import grade
+from scoring import grade
 from server.models import Action, ActionParameters, Observation, Reward, EpisodeState
 
 # ── Action type sets ─────────────────────────────────────────────────────────

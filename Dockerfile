@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY tasks.py .
 COPY graders.py .
 COPY openenv.yaml .
-COPY inference.py .
+COPY agent.py .
 COPY server/ ./server/
 
 RUN touch server/__init__.py
