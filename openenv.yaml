@@ -1,0 +1,53 @@
+name: sre-incident-response
+version: "0.1.0"
+app_port: 7860
+description: >
+  OpenEnv environment simulating SRE/DevOps on-call incident response.
+  An AI agent classifies alert severity, performs root cause analysis
+  through log/metric queries, and executes remediation actions to
+  resolve production incidents end-to-end.
+author: Elliot89
+license: MIT
+tags:
+  - openenv
+  - sre
+  - devops
+  - incident-response
+  - real-world
+  - agentic
+
+tasks:
+  - id: alert_classification
+    name: "Task 1: Alert Severity Classification"
+    difficulty: easy
+    max_steps: 3
+    score_range: [0.0, 1.0]
+    description: >
+      Classify incoming alert severity (P1–P4) using diagnostic tools.
+
+  - id: root_cause_analysis
+    name: "Task 2: Root Cause Analysis"
+    difficulty: medium
+    max_steps: 10
+    score_range: [0.0, 1.0]
+    description: >
+      Trace a live incident through logs/metrics/dependencies
+      to identify the exact root cause service and failure mode.
+
+  - id: remediation_planning
+    name: "Task 3: Incident Remediation"
+    difficulty: hard
+    max_steps: 15
+    score_range: [0.0, 1.0]
+    description: >
+      Fully resolve a production incident: diagnose, remediate,
+      and submit a documented resolution summary.
+
+endpoints:
+  health:   "GET /health"
+  reset:    "POST /reset"
+  step:     "POST /step"
+  state:    "GET /state"
+  tasks:    "GET /tasks"
+  grader:   "GET /grader"
+  baseline: "POST /baseline"
