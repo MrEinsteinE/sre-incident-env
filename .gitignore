@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .Python
 *.egg-info/
 dist/
@@ -9,6 +10,7 @@ build/
 .venv/
 venv/
 env/
+ENV/
 *.log
 .DS_Store
 .pytest_cache/
@@ -18,3 +20,7 @@ tests/
 conftest.py
 pyproject.toml
 *.sqlite
+*.pyd
+*.dll
+*.so
+node_modules/

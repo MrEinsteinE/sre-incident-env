@@ -1,18 +1,21 @@
-name: sre-incident-response
+name: cloud-incident-response
 version: "0.1.0"
 app_port: 7860
 description: >
-  OpenEnv environment simulating SRE/DevOps on-call incident response.
-  An AI agent classifies alert severity, performs root cause analysis
-  through log/metric queries, and executes remediation actions to
-  resolve production incidents end-to-end.
+  OpenEnv environment simulating real-world cloud SRE on-call incident response.
+  Distinct from Kubernetes ops — focuses on cross-service cascading failures,
+  network partitions, OOM kills, and CDN storms across distributed systems.
+  An AI agent classifies alert severity, performs root cause analysis through
+  log/metric/dependency queries, and executes remediation sequences to resolve
+  production incidents end-to-end.
 author: Elliot89
 license: MIT
 tags:
   - openenv
   - sre
-  - devops
+  - cloud
   - incident-response
+  - devops
   - real-world
   - agentic
 
@@ -23,7 +26,8 @@ tasks:
     max_steps: 3
     score_range: [0.0, 1.0]
     description: >
-      Classify incoming alert severity (P1–P4) using diagnostic tools.
+      Classify incoming alert severity (P1-P4) by querying
+      logs and metrics across affected cloud services.
 
   - id: root_cause_analysis
     name: "Task 2: Root Cause Analysis"
@@ -31,8 +35,9 @@ tasks:
     max_steps: 10
     score_range: [0.0, 1.0]
     description: >
-      Trace a live incident through logs/metrics/dependencies
-      to identify the exact root cause service and failure mode.
+      Trace a live incident through logs, metrics, dependencies,
+      and recent deploys to identify the exact root cause service
+      and failure mode across a distributed system.
 
   - id: remediation_planning
     name: "Task 3: Incident Remediation"
@@ -40,7 +45,8 @@ tasks:
     max_steps: 15
     score_range: [0.0, 1.0]
     description: >
-      Fully resolve a production incident: diagnose, remediate,
+      Fully resolve a production incident end-to-end: diagnose
+      the root cause, execute the correct remediation sequence,
       and submit a documented resolution summary.
 
 endpoints:

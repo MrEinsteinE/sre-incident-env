@@ -1,16 +1,15 @@
-# SRE Incident Response OpenEnv v0.1.0
 """
-server/app.py — FastAPI server exposing the OpenEnv HTTP interface.
+server/app.py — FastAPI server for Cloud Incident Response OpenEnv.
 
 Endpoints:
-  GET  /health
-  GET  /
-  POST /reset?task_id=...&scenario_index=...
-  POST /step
-  GET  /state
-  GET  /tasks
-  GET  /grader
-  POST /baseline
+  GET  /          HTML landing page (triggers HF Space "Running" status)
+  GET  /health    Health check
+  POST /reset     Start new episode
+  POST /step      Submit action
+  GET  /state     Current episode state
+  GET  /tasks     All tasks with schemas
+  GET  /grader    Score current episode
+  POST /baseline  Run inference.py
 """
 
 from __future__ import annotations
@@ -24,17 +23,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from server.models import Action
 from server.environment import IncidentEnvironment
 from tasks import list_tasks, ALL_TASKS
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 app = FastAPI(
-    title="SRE Incident Response — OpenEnv",
+    title="Cloud Incident Response — OpenEnv",
     version="0.1.0",
-    description="OpenEnv environment for training AI agents on SRE incident response tasks.",
+    description=(
+        "OpenEnv environment for training AI agents on cloud SRE incident response. "
+        "Covers cascading failures, OOM kills, CDN storms, and network partitions."
+    ),
 )
 
 app.add_middleware(
@@ -47,35 +50,66 @@ app.add_middleware(
 env = IncidentEnvironment()
 
 
-# ── Health / root ────────────────────────────────────────────────────────────
+# ── Landing page (required for HF Space Running status) ─────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cloud Incident Response — OpenEnv</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 680px;
+           margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+    h1   { font-size: 1.6rem; margin-bottom: 4px; }
+    .tag { display:inline-block; background:#e8f4fd; color:#0066cc;
+           padding:2px 8px; border-radius:4px; font-size:.8rem;
+           margin-right:4px; margin-bottom:8px; }
+    .status { color: #16a34a; font-weight: 600; }
+    table  { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { text-align: left; padding: 8px 12px;
+             border-bottom: 1px solid #e5e7eb; font-size: .9rem; }
+    th     { background: #f9fafb; font-weight: 600; }
+    a      { color: #0066cc; }
+    code   { background: #f3f4f6; padding: 1px 5px; border-radius: 3px;
+             font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <h1>&#x1F6A8; Cloud Incident Response &mdash; OpenEnv</h1>
+  <div>
+    <span class="tag">openenv</span><span class="tag">sre</span>
+    <span class="tag">cloud</span><span class="tag">real-world</span>
+    <span class="tag">agentic</span>
+  </div>
+  <p>Status: <span class="status">&#x2713; Running</span></p>
+  <p>
+    OpenEnv environment for training and evaluating AI agents on
+    cloud SRE incident response. Covers cross-service cascading failures,
+    OOM kills, CDN cache storms, and BGP network partitions.
+  </p>
+  <table>
+    <tr><th>Task</th><th>Difficulty</th><th>Max Steps</th></tr>
+    <tr><td><code>alert_classification</code></td><td>Easy</td><td>3</td></tr>
+    <tr><td><code>root_cause_analysis</code></td><td>Medium</td><td>10</td></tr>
+    <tr><td><code>remediation_planning</code></td><td>Hard</td><td>15</td></tr>
+  </table>
+  <p>
+    <a href="/docs">&#x1F4D6; API Docs (Swagger)</a> &nbsp;&middot;&nbsp;
+    <a href="/tasks">&#x1F4CB; Tasks</a> &nbsp;&middot;&nbsp;
+    <a href="/health">&#x2764; Health</a>
+  </p>
+</body>
+</html>"""
+
+
+# ── Core endpoints ───────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "0.1.0"}
 
-
-from fastapi.responses import HTMLResponse
-
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return """<!DOCTYPE html>
-<html>
-<head><title>SRE Incident Response OpenEnv</title></head>
-<body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px">
-  <h1>&#x1F6A8; SRE Incident Response &mdash; OpenEnv</h1>
-  <p>Status: <strong style="color:green">Running &#x2713;</strong></p>
-  <p>OpenEnv environment for training AI agents on SRE incident response.</p>
-  <ul>
-    <li><a href="/health">/health</a> &mdash; Health check</li>
-    <li><a href="/tasks">/tasks</a> &mdash; All 3 tasks</li>
-    <li><a href="/docs">/docs</a> &mdash; Interactive API docs (Swagger)</li>
-  </ul>
-  <p><em>Tasks: alert_classification (easy) &rarr; root_cause_analysis (medium) &rarr; remediation_planning (hard)</em></p>
-</body>
-</html>"""
-
-
-# ── Core OpenEnv endpoints ───────────────────────────────────────────────────
 
 @app.post("/reset")
 def reset(
@@ -94,14 +128,14 @@ def reset(
 
 @app.post("/step")
 def step(action: Action):
-    """Submit an action. Returns observation, reward, done, info."""
+    """Submit one action. Returns observation, reward, done, info."""
     try:
         obs, reward, done, info = env.step(action)
         return {
             "observation": obs.model_dump(),
-            "reward": reward.model_dump(),
-            "done": done,
-            "info": info,
+            "reward":      reward.model_dump(),
+            "done":        done,
+            "info":        info,
         }
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -122,30 +156,48 @@ def state():
 
 @app.get("/tasks")
 def tasks():
-    """Return all available tasks with descriptions and action schemas."""
+    """Return all tasks with descriptions and action schemas."""
     return {
         "tasks": list_tasks(),
         "total": len(ALL_TASKS),
         "action_schema": {
             "diagnostic": [
-                {"action_type": "query_logs",           "parameters": {"service": "string"}},
-                {"action_type": "check_metrics",        "parameters": {"service": "string"}},
-                {"action_type": "check_dependencies",   "parameters": {"service": "string"}},
-                {"action_type": "check_recent_deploys", "parameters": {"service": "string"}},
-                {"action_type": "check_service_status", "parameters": {"service": "string"}},
+                {"action_type": "query_logs",
+                 "parameters": {"service": "string"}},
+                {"action_type": "check_metrics",
+                 "parameters": {"service": "string"}},
+                {"action_type": "check_dependencies",
+                 "parameters": {"service": "string"}},
+                {"action_type": "check_recent_deploys",
+                 "parameters": {"service": "string"}},
+                {"action_type": "check_service_status",
+                 "parameters": {"service": "string"}},
             ],
             "remediation": [
-                {"action_type": "restart_service",       "parameters": {"service": "string"}},
-                {"action_type": "rollback_deploy",       "parameters": {"service": "string", "target_version": "string"}},
-                {"action_type": "scale_service",         "parameters": {"service": "string", "replicas": "int"}},
-                {"action_type": "disable_feature_flag",  "parameters": {"flag": "string"}},
-                {"action_type": "clear_cache",           "parameters": {"service": "string"}},
-                {"action_type": "execute_runbook_step",  "parameters": {"runbook_action": "string", "target": "string"}},
+                {"action_type": "restart_service",
+                 "parameters": {"service": "string"}},
+                {"action_type": "rollback_deploy",
+                 "parameters": {"service": "string",
+                                "target_version": "string"}},
+                {"action_type": "scale_service",
+                 "parameters": {"service": "string", "replicas": "int"}},
+                {"action_type": "disable_feature_flag",
+                 "parameters": {"flag": "string"}},
+                {"action_type": "clear_cache",
+                 "parameters": {"service": "string"}},
+                {"action_type": "execute_runbook_step",
+                 "parameters": {"runbook_action": "string",
+                                "target": "string"}},
             ],
             "submission": [
-                {"action_type": "submit_severity",    "parameters": {"severity": "P1|P2|P3|P4", "service": "string"}},
-                {"action_type": "submit_root_cause",  "parameters": {"service": "string", "failure_mode": "string"}},
-                {"action_type": "submit_resolution",  "parameters": {"summary": "string"}},
+                {"action_type": "submit_severity",
+                 "parameters": {"severity": "P1|P2|P3|P4",
+                                "service": "string"}},
+                {"action_type": "submit_root_cause",
+                 "parameters": {"service": "string",
+                                "failure_mode": "string"}},
+                {"action_type": "submit_resolution",
+                 "parameters": {"summary": "string"}},
             ],
         },
     }
@@ -153,19 +205,19 @@ def tasks():
 
 @app.get("/grader")
 def grader():
-    """Run the grader on the current episode. Returns score in [0.0, 1.0]."""
+    """Score the current episode. Returns total in [0.0, 1.0]."""
     try:
         s = env.state()
-        from scoring import grade
+        from graders import grade
         result = grade(s.task_id, s.model_dump(), env._scenario)
         return {
-            "total": result["total"],
-            "breakdown": result["breakdown"],
-            "feedback": result["feedback"],
-            "task_id": s.task_id,
+            "total":       result["total"],
+            "breakdown":   result["breakdown"],
+            "feedback":    result["feedback"],
+            "task_id":     s.task_id,
             "scenario_id": s.scenario_id,
-            "steps_used": s.step_count,
-            "done": s.done,
+            "steps_used":  s.step_count,
+            "done":        s.done,
         }
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -175,29 +227,31 @@ def grader():
 
 @app.post("/baseline")
 def baseline():
-    """Run agent.py and return the JSON score summary."""
-    script = os.path.join(_PROJECT_ROOT, "agent.py")
+    """Run inference.py and return the JSON score summary."""
+    script = os.path.join(_ROOT, "inference.py")
     if not os.path.exists(script):
-        raise HTTPException(status_code=500, detail="agent.py not found in project root")
+        raise HTTPException(
+            status_code=500, detail="inference.py not found in project root"
+        )
     try:
         result = subprocess.run(
             [sys.executable, script],
             capture_output=True,
             text=True,
             timeout=1200,
-            cwd=_PROJECT_ROOT,
+            cwd=_ROOT,
             env={**os.environ, "ENV_BASE_URL": "http://localhost:7860"},
         )
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="agent.py timed out (>20 min)")
+        raise HTTPException(status_code=500, detail="inference.py timed out (>20 min)")
 
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr[-2000:])
 
     lines = result.stdout.strip().splitlines()
-    last_line = lines[-1] if lines else ""
+    last = lines[-1] if lines else ""
     try:
-        return json.loads(last_line)
+        return json.loads(last)
     except Exception:
         return {"raw_output": result.stdout[-3000:]}
 

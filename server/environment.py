@@ -1,5 +1,5 @@
 """
-server/environment.py — Core OpenEnv environment for SRE Incident Response.
+server/environment.py — Core OpenEnv environment for Cloud Incident Response.
 
 Implements the full OpenEnv interface:
   reset(task_id, scenario_index) -> Observation
@@ -18,42 +18,42 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tasks import ALL_TASKS, get_task, get_scenario
-from scoring import grade
+from tasks import get_task, get_scenario
+from graders import grade
 from server.models import Action, ActionParameters, Observation, Reward, EpisodeState
 
-# ── Action type sets ─────────────────────────────────────────────────────────
+# ── Action type classification ────────────────────────────────────────────────
 
-_DIAGNOSTIC = {
+_DIAGNOSTIC = frozenset({
     "query_logs", "check_metrics", "check_dependencies",
     "check_recent_deploys", "check_service_status",
-}
+})
 
-_REMEDIATION = {
+_REMEDIATION = frozenset({
     "restart_service", "rollback_deploy", "scale_service",
     "disable_feature_flag", "clear_cache", "execute_runbook_step",
-}
+})
 
-_SUBMIT = {
+_SUBMIT = frozenset({
     "submit_severity", "submit_root_cause", "submit_resolution",
-}
+})
 
-# ── Reward constants ─────────────────────────────────────────────────────────
+# ── Reward constants ──────────────────────────────────────────────────────────
 
-R_QUERY_KNOWN_FIRST  = +0.05
-R_QUERY_KNOWN_REPEAT = +0.01
-R_QUERY_UNKNOWN      = -0.05
-R_REMEDIATION_GOOD   = +0.10
-R_REMEDIATION_WRONG  = -0.10
-R_STEP_PAST_HALF     = -0.02
-R_TIMEOUT            = -0.10
-R_UNKNOWN_ACTION     = -0.03
+R_QUERY_FIRST   = +0.05   # First time querying a known service
+R_QUERY_REPEAT  = +0.01   # Re-querying same service/tool
+R_QUERY_UNKNOWN = -0.05   # Querying an unknown service
+R_REM_GOOD      = +0.10   # Correct remediation action
+R_REM_WRONG     = -0.10   # Wrong remediation action
+R_PAST_HALF     = -0.02   # Step efficiency penalty past halfway
+R_TIMEOUT       = -0.10   # No submission before max_steps
+R_BAD_ACTION    = -0.03   # Unrecognised action_type
 
 
 class IncidentEnvironment:
     """
-    OpenEnv environment for SRE Incident Response.
-    One instance handles one episode at a time.
+    OpenEnv environment for Cloud Incident Response.
+    One instance handles one episode at a time. Thread-safe.
     """
 
     def __init__(self):
@@ -74,19 +74,19 @@ class IncidentEnvironment:
             self._task_def = task_def
             self._scenario = scenario
             self._s = {
-                "episode_id":       str(uuid.uuid4()),
-                "task_id":          task_id,
-                "scenario_id":      scenario["scenario_id"],
-                "step_count":       0,
-                "max_steps":        task_def["max_steps"],
-                "action_history":   [],
-                "queried_data":     {},
-                "queried_keys":     set(),   # tracks (action_type, service) for repeat detection
-                "submitted":        False,
-                "resolved":         False,
-                "done":             False,
+                "episode_id":        str(uuid.uuid4()),
+                "task_id":           task_id,
+                "scenario_id":       scenario["scenario_id"],
+                "step_count":        0,
+                "max_steps":         task_def["max_steps"],
+                "action_history":    [],
+                "queried_data":      {},
+                "queried_keys":      set(),
+                "submitted":         False,
+                "resolved":          False,
+                "done":              False,
                 "cumulative_reward": 0.0,
-                "feedback":         f"Episode started. {scenario['description']}",
+                "feedback":          f"Episode started. {scenario['description']}",
             }
             self._ready = True
             return self._build_obs()
@@ -99,30 +99,31 @@ class IncidentEnvironment:
 
             s = self._s
             if s["done"]:
-                obs = self._build_obs()
-                return obs, Reward(value=0.0, reason="episode already done",
-                                   cumulative=s["cumulative_reward"]), True, {}
+                return (
+                    self._build_obs(),
+                    Reward(value=0.0, reason="episode already done",
+                           cumulative=s["cumulative_reward"]),
+                    True,
+                    {},
+                )
 
             s["step_count"] += 1
             step_num = s["step_count"]
-            max_steps = s["max_steps"]
             at = action.action_type
             params = action.parameters
 
-            # Record action
             s["action_history"].append({
                 "action_type": at,
                 "parameters":  params.model_dump(exclude_none=True),
                 "step":        step_num,
             })
 
-            # ── Compute step reward ──────────────────────────────────────────
             r = 0.0
             fb: list[str] = []
 
             # Efficiency penalty past halfway
-            if step_num > max_steps // 2:
-                r += R_STEP_PAST_HALF
+            if step_num > s["max_steps"] // 2:
+                r += R_PAST_HALF
                 fb.append("efficiency penalty")
 
             if at in _DIAGNOSTIC:
@@ -134,11 +135,11 @@ class IncidentEnvironment:
                 if terminal:
                     s["done"] = True
             else:
-                r += R_UNKNOWN_ACTION
+                r += R_BAD_ACTION
                 fb.append(f"unknown action_type '{at}'")
 
             # Timeout
-            if step_num >= max_steps and not s["done"]:
+            if step_num >= s["max_steps"] and not s["done"]:
                 r += R_TIMEOUT
                 fb.append("timeout — no submission made")
                 s["done"] = True
@@ -147,19 +148,24 @@ class IncidentEnvironment:
             if s["done"]:
                 result = grade(s["task_id"], s, self._scenario)
                 s["cumulative_reward"] = round(
-                    s["cumulative_reward"] + result["total"], 4
+                    s["cumulative_reward"] + r + result["total"], 4
                 )
-                fb.append(f"grader → {result['feedback']}")
+                fb.append(f"grader={result['feedback']}")
+            else:
+                s["cumulative_reward"] = round(s["cumulative_reward"] + r, 4)
 
-            s["cumulative_reward"] = round(s["cumulative_reward"] + r, 4)
             s["feedback"] = " | ".join(fb) if fb else "ok"
 
-            reward_obj = Reward(
-                value=round(r, 4),
-                reason=s["feedback"],
-                cumulative=s["cumulative_reward"],
+            return (
+                self._build_obs(),
+                Reward(
+                    value=round(r, 4),
+                    reason=s["feedback"],
+                    cumulative=s["cumulative_reward"],
+                ),
+                s["done"],
+                {"step": step_num, "feedback": s["feedback"]},
             )
-            return self._build_obs(), reward_obj, s["done"], {"step": step_num, "feedback": s["feedback"]}
 
     def state(self) -> EpisodeState:
         """Return the full current episode state."""
@@ -173,7 +179,7 @@ class IncidentEnvironment:
                 scenario_id=s["scenario_id"],
                 step_count=s["step_count"],
                 max_steps=s["max_steps"],
-                action_history=s["action_history"],
+                action_history=list(s["action_history"]),
                 queried_data=dict(s["queried_data"]),
                 submitted=s["submitted"],
                 resolved=s["resolved"],
@@ -191,17 +197,16 @@ class IncidentEnvironment:
         service = (params.service or "").lower().strip()
         known = {sv.lower() for sv in self._scenario.get("known_services", set())}
         tool_data = self._scenario.get("tool_responses", {}).get(at, {})
-        query_key = (at, service)
+        key = (at, service)
 
         if service and service in known:
-            if query_key not in s["queried_keys"]:
-                r += R_QUERY_KNOWN_FIRST
-                fb.append(f"queried {service} (+{R_QUERY_KNOWN_FIRST})")
-                s["queried_keys"].add(query_key)
+            if key not in s["queried_keys"]:
+                r += R_QUERY_FIRST
+                fb.append(f"queried {service} (+{R_QUERY_FIRST})")
+                s["queried_keys"].add(key)
             else:
-                r += R_QUERY_KNOWN_REPEAT
-                fb.append(f"re-queried {service} (+{R_QUERY_KNOWN_REPEAT})")
-
+                r += R_QUERY_REPEAT
+                fb.append(f"re-queried {service} (+{R_QUERY_REPEAT})")
             result = tool_data.get(service, f"No data for '{service}'.")
             s["queried_data"].setdefault(at, {})[service] = result
 
@@ -219,42 +224,36 @@ class IncidentEnvironment:
         s = self._s
         service = (params.service or "").lower().strip()
         flag = (params.flag or "").lower().strip()
-        runbook_action = (params.runbook_action or "").lower().strip()
+        runbook = (params.runbook_action or "").lower().strip()
         target = (params.target or "").lower().strip()
 
-        # Build lookup keys
-        keys_to_check = {at}
-        if service:
-            keys_to_check.add(f"{at}:{service}")
-        if flag:
-            keys_to_check.add(f"{at}:{flag}")
-        if runbook_action:
-            keys_to_check.add(f"execute_runbook_step:{runbook_action}")
-        if target:
-            keys_to_check.add(f"execute_runbook_step:{target}")
+        keys = {at}
+        if service: keys.add(f"{at}:{service}")
+        if flag:    keys.add(f"{at}:{flag}")
+        if runbook: keys.add(f"execute_runbook_step:{runbook}")
+        if target:  keys.add(f"execute_runbook_step:{target}")
 
         wrong_map = self._scenario.get("wrong_actions", {})
-        rem_data = self._scenario.get("remediation_data", {})
+        rem_data  = self._scenario.get("remediation_data", {})
 
-        is_wrong = any(k in wrong_map for k in keys_to_check)
-
-        if is_wrong:
-            r += R_REMEDIATION_WRONG
-            reason = next((wrong_map[k] for k in keys_to_check if k in wrong_map), "wrong action")
-            fb.append(f"wrong: {at} — {str(reason)[:80]}")
+        if any(k in wrong_map for k in keys):
+            r += R_REM_WRONG
+            reason = next(
+                (wrong_map[k] for k in keys if k in wrong_map), "wrong action"
+            )
+            fb.append(f"wrong action '{at}': {str(reason)[:80]}")
         else:
-            r += R_REMEDIATION_GOOD
-            fb.append(f"executed {at}" + (f" on {service}" if service else ""))
-            # Store remediation result if available
+            r += R_REM_GOOD
+            fb.append(f"executed {at}" + (f" on '{service}'" if service else ""))
             at_data = rem_data.get(at, {})
             result = (
-                at_data.get(service)
-                or at_data.get(flag)
-                or at_data.get(runbook_action)
-                or at_data.get(target)
-                or "action executed"
+                at_data.get(service) or at_data.get(flag) or
+                at_data.get(runbook) or at_data.get(target) or
+                "action executed successfully"
             )
-            s["queried_data"].setdefault(at, {})[service or flag or runbook_action or at] = result
+            s["queried_data"].setdefault(at, {})[
+                service or flag or runbook or target or at
+            ] = result
 
         return r, fb
 
@@ -265,32 +264,33 @@ class IncidentEnvironment:
         s["submitted"] = True
 
         if at == "submit_severity":
-            severity = (params.severity or "").upper()
-            fb.append(f"submitted severity: {severity}")
+            fb.append(f"submitted severity: {(params.severity or '').upper()}")
 
         elif at == "submit_root_cause":
-            svc = params.service or ""
-            mode = params.failure_mode or ""
-            fb.append(f"submitted root cause: service={svc}, failure_mode={mode}")
+            fb.append(
+                f"submitted root cause: "
+                f"service={params.service or ''}, "
+                f"failure_mode={params.failure_mode or ''}"
+            )
 
         elif at == "submit_resolution":
             summary = params.summary or ""
-            diag_rem_count = sum(
+            inv_count = sum(
                 1 for a in s["action_history"]
                 if a.get("action_type") in _DIAGNOSTIC | _REMEDIATION
             )
-            if summary.strip() and diag_rem_count >= 1:
+            if summary.strip() and inv_count >= 1:
                 s["resolved"] = True
                 fb.append("resolution submitted — incident resolved")
             else:
-                fb.append("resolution submitted (insufficient investigation)")
+                fb.append("resolution submitted — insufficient investigation")
 
-        return r, fb, True  # always terminal
+        return r, fb, True
 
     # ── Build observation ────────────────────────────────────────────────────
 
     def _build_obs(self) -> Observation:
-        s = self._s
+        s  = self._s
         sc = self._scenario
         td = self._task_def
         return Observation(

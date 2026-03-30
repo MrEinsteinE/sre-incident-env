@@ -2,6 +2,7 @@
 server/models.py — Typed Pydantic models for the OpenEnv interface.
 
 OpenEnv requires three typed models: Action, Observation, Reward.
+All models use Pydantic v2.
 """
 
 from __future__ import annotations

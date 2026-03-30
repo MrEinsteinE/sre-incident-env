@@ -2,14 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Dependencies first — maximizes layer cache on rebuilds
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY tasks.py .
-COPY graders.py .
-COPY openenv.yaml .
-COPY agent.py .
-COPY server/ ./server/
+# Application code
+COPY tasks.py      .
+COPY graders.py    .
+COPY openenv.yaml  .
+COPY inference.py  .
+COPY server/       ./server/
 
 RUN touch server/__init__.py
 
