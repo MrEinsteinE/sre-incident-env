@@ -57,23 +57,21 @@ from fastapi.responses import HTMLResponse
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    return """
-<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html>
-<head><title>SRE Incident Response — OpenEnv</title></head>
+<head><title>SRE Incident Response OpenEnv</title></head>
 <body style="font-family:sans-serif;max-width:600px;margin:40px auto;padding:20px">
-  <h1>🚨 SRE Incident Response — OpenEnv</h1>
-  <p>Status: <strong style="color:green">Running</strong></p>
-  <p>An OpenEnv environment for training AI agents on SRE incident response tasks.</p>
+  <h1>&#x1F6A8; SRE Incident Response &mdash; OpenEnv</h1>
+  <p>Status: <strong style="color:green">Running &#x2713;</strong></p>
+  <p>OpenEnv environment for training AI agents on SRE incident response.</p>
   <ul>
-    <li><a href="/health">/health</a> — Health check</li>
-    <li><a href="/tasks">/tasks</a> — All tasks</li>
-    <li><a href="/docs">/docs</a> — Interactive API docs</li>
+    <li><a href="/health">/health</a> &mdash; Health check</li>
+    <li><a href="/tasks">/tasks</a> &mdash; All 3 tasks</li>
+    <li><a href="/docs">/docs</a> &mdash; Interactive API docs (Swagger)</li>
   </ul>
-  <p><em>3 tasks: alert_classification (easy), root_cause_analysis (medium), remediation_planning (hard)</em></p>
+  <p><em>Tasks: alert_classification (easy) &rarr; root_cause_analysis (medium) &rarr; remediation_planning (hard)</em></p>
 </body>
-</html>
-"""
+</html>"""
 
 
 # ── Core OpenEnv endpoints ───────────────────────────────────────────────────
