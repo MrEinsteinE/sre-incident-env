@@ -5,32 +5,23 @@ Public API:
     grade(task_id, state, scenario) -> {"total": float, "breakdown": dict, "feedback": str}
 
 All scores are in [0.0, 1.0].
-Graders are fully deterministic and reproducible — same inputs always produce same score.
 """
 
 from __future__ import annotations
 
 
 def _normalise(s: str) -> str:
-    """Lowercase, strip whitespace, collapse hyphens/underscores for fuzzy matching."""
+    """Lowercase, strip whitespace, collapse hyphens/underscores."""
     return s.lower().strip().replace("_", "-").replace(" ", "-")
 
 
 def _svc_match(submitted: str, correct: str) -> bool:
-    """
-    Flexible service name matching:
-    - Exact match after normalisation
-    - Submitted is a substring of correct (e.g. 'analytics' matches 'analytics-service')
-    - Correct is a substring of submitted
-    """
     s = _normalise(submitted)
     c = _normalise(correct)
     if s == c:
         return True
-    # Allow partial: 'analytics' should match 'analytics-service'
     if s in c or c in s:
         return True
-    # Handle common aliases
     aliases = {
         "network": "network-infra",
         "network-infrastructure": "network-infra",
@@ -47,31 +38,19 @@ def _svc_match(submitted: str, correct: str) -> bool:
 
 
 def grade(task_id: str, state: dict, scenario: dict) -> dict:
-    """Route to the correct task grader."""
     _graders = {
         "alert_classification": _grade_alert_classification,
-        "root_cause_analysis":  _grade_root_cause_analysis,
+        "root_cause_analysis": _grade_root_cause_analysis,
         "remediation_planning": _grade_remediation_planning,
     }
     fn = _graders.get(task_id)
     if fn is None:
-        return {
-            "total": 0.0,
-            "breakdown": {},
-            "feedback": f"Unknown task_id '{task_id}'",
-        }
+        return {"total": 0.0, "breakdown": {}, "feedback": f"Unknown task_id '{task_id}'"}
     return fn(state, scenario)
 
 
 # ── Task 1: Alert Classification ─────────────────────────────────────────────
-
 def _grade_alert_classification(state: dict, scenario: dict) -> dict:
-    """
-    1.0 — exact severity match
-    0.5 — adjacent severity (one level off)
-    0.25 — two levels off
-    0.0  — three levels off or no submission
-    """
     history = state.get("action_history", [])
     correct = scenario.get("correct_severity", "P1")
     adjacent = scenario.get("adjacent_severities", [])
@@ -114,18 +93,7 @@ def _grade_alert_classification(state: dict, scenario: dict) -> dict:
 
 
 # ── Task 2: Root Cause Analysis ──────────────────────────────────────────────
-
 def _grade_root_cause_analysis(state: dict, scenario: dict) -> dict:
-    """
-    Base (0.0–0.6):
-      0.60 — correct service + failure mode keyword match
-      0.35 — correct service only
-      0.10 — submitted something (partial credit — no timeout penalty)
-      0.00 — no submission
-
-    Efficiency bonus (0.0–0.4):
-      Rewards targeted investigation (relevant queries / total queries).
-    """
     history = state.get("action_history", [])
     correct_rc = scenario.get("correct_root_cause", {})
     correct_svc = correct_rc.get("service", "").lower().strip()
@@ -137,7 +105,6 @@ def _grade_root_cause_analysis(state: dict, scenario: dict) -> dict:
         "check_recent_deploys", "check_service_status",
     }
 
-    # Find submit_root_cause
     sub_svc, sub_mode, sub_step = "", "", len(history)
     for a in history:
         if a.get("action_type") == "submit_root_cause":
@@ -154,24 +121,21 @@ def _grade_root_cause_analysis(state: dict, scenario: dict) -> dict:
             "feedback": "No root cause submitted — score 0.0",
         }
 
-    # Use flexible service matching
     svc_match = _svc_match(sub_svc, correct_svc)
-
-    # Failure mode: check keywords
     mode_kws = [w for w in correct_mode.split() if len(w) > 3]
     mode_match = svc_match and (
         any(kw in sub_mode for kw in mode_kws) if mode_kws else True
     )
 
     if mode_match:
-        base, base_fb = 0.6, f"Correct service + failure mode"
+        base, base_fb = 0.6, "Correct service + failure mode"
     elif svc_match:
-        base, base_fb = 0.35, f"Correct service only — failure mode unclear"
+        base, base_fb = 0.35, "Correct service only — failure mode unclear"
     else:
-        # Partial credit for at least submitting (avoids timeout -0.10 and scores something)
-        base, base_fb = 0.10, f"Wrong service: '{sub_svc}' (correct: '{correct_svc}') — partial credit for submitting"
+        base, base_fb = 0.10, (
+            f"Wrong service: '{sub_svc}' (correct: '{correct_svc}') — partial credit"
+        )
 
-    # Efficiency bonus (only meaningful if service was correct)
     efficiency = 0.0
     if svc_match:
         pre_submit = [
@@ -201,29 +165,12 @@ def _grade_root_cause_analysis(state: dict, scenario: dict) -> dict:
             "submitted_service": sub_svc,
             "correct_service": correct_svc,
         },
-        "feedback": (
-            f"{base_fb} | efficiency={efficiency:.2f} | total={total:.2f}"
-        ),
+        "feedback": f"{base_fb} | efficiency={efficiency:.2f} | total={total:.2f}",
     }
 
 
 # ── Task 3: Remediation Planning ─────────────────────────────────────────────
-
 def _grade_remediation_planning(state: dict, scenario: dict) -> dict:
-    """
-    Base (0.0 or 0.6):
-      0.6 — submit_resolution with summary after ≥1 investigation action
-
-    Efficiency bonus (0.0–0.3):
-      Fraction of correct remediation sequence steps executed
-
-    Wrong action penalty (0.0–0.15):
-      -0.05 per wrong action, capped at -0.15
-
-    Summary quality bonus (0.0–0.1):
-      +0.10 if summary contains ≥3 resolution keywords
-      +0.05 if summary contains ≥1 resolution keyword
-    """
     history = state.get("action_history", [])
     correct_seq = scenario.get("correct_remediation_sequence", [])
     wrong_map = scenario.get("wrong_actions", {})
@@ -256,7 +203,6 @@ def _grade_remediation_planning(state: dict, scenario: dict) -> dict:
 
     base = 0.6
 
-    # Build executed action key set
     executed = set()
     for a in history:
         at = a.get("action_type", "")
@@ -266,16 +212,14 @@ def _grade_remediation_planning(state: dict, scenario: dict) -> dict:
         runbook = p.get("runbook_action", "")
         target = p.get("target", "")
         executed.add(at)
-        if svc:    executed.add(f"{at}:{svc}")
-        if flag:   executed.add(f"{at}:{flag}")
+        if svc:     executed.add(f"{at}:{svc}")
+        if flag:    executed.add(f"{at}:{flag}")
         if runbook: executed.add(f"execute_runbook_step:{runbook}")
         if target:  executed.add(f"execute_runbook_step:{target}")
 
-    # Fuzzy matching for correct_seq items
     def _seq_key_matches(seq_key: str) -> bool:
         if seq_key in executed:
             return True
-        # Try fuzzy: split on ':' and match service part loosely
         if ":" in seq_key:
             action, target = seq_key.split(":", 1)
             for ex_key in executed:
@@ -288,16 +232,14 @@ def _grade_remediation_planning(state: dict, scenario: dict) -> dict:
     matched = sum(1 for k in correct_seq if _seq_key_matches(k))
     efficiency = round((matched / len(correct_seq)) * 0.3, 4) if correct_seq else 0.0
 
-    # Wrong action penalty
     wrong_count = sum(
         1 for a in history
         if (a.get("action_type") in wrong_map or
-            f"{a.get('action_type')}:{a.get('parameters',{}).get('service','')}"
+            f"{a.get('action_type')}:{a.get('parameters', {}).get('service', '')}"
             in wrong_map)
     )
     penalty = round(min(0.15, wrong_count * 0.05), 4)
 
-    # Summary quality — also check for keywords in summary
     sl = summary.lower()
     hits = sum(1 for kw in keywords if kw in sl)
     summary_bonus = 0.10 if hits >= 3 else (0.05 if hits >= 1 else 0.0)
